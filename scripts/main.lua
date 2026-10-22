@@ -48,7 +48,7 @@ for _, row in ipairs(ROWS) do
 end
 
 if api.has_capability("ui.settings") and settings and settings.define then
-    if not pcall(settings.define, "Stone Skin", ROWS) then settings.define("Stone Skin", PLAIN) end
+    if not pcall(settings.define, "Body School", ROWS) then settings.define("Body School", PLAIN) end
     for _, row in ipairs(PLAIN) do
         local v = settings.get(row.key)
         if v ~= nil then cfg[row.key] = v end

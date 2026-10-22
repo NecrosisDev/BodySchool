@@ -1,4 +1,4 @@
-"""Builds the Stone Skin release: dist/mods/com.necrosis.stoneskin/ and dist/StoneSkin-<version>.zip
+"""Builds the Body School release: dist/mods/com.necrosis.stoneskin/ and dist/BodySchool-<version>.zip
 with a .sha256 beside it.
 
     python -X utf8 -B release.py [--zip-only] [--tag v<version>] [tools/make_dist.py options]
@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-NAME = 'StoneSkin'
+NAME = 'BodySchool'
 MOD_ID = 'com.necrosis.stoneskin'
 DIST = ROOT / 'dist'
 

@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 # This mod's build reads the installed game, so release.py runs on the author's PC and commits
-# release/StoneSkin-<version>.zip with its .sha256. CI checks that copy and publishes it on a version tag.
+# release/BodySchool-<version>.zip with its .sha256. CI checks that copy and publishes it on a version tag.
 jobs:
   check:
     if: ${{ !startsWith(github.ref, 'refs/tags/') }}
@@ -38,7 +38,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          zip="StoneSkin-${GITHUB_REF_NAME#v}.zip"
+          zip="BodySchool-${GITHUB_REF_NAME#v}.zip"
           if [[ ! -f "release/$zip" ]]; then
             echo "::error::release/$zip is not committed; run release.py and commit release/"
             exit 1

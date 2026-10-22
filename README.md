@@ -1,4 +1,4 @@
-# Body School (Stone Skin)
+# Body School
 
 Adds the Body page to Exanima's spell book. Its first power, Stone Skin, hardens
 your skin into craggy stone plates that turn edges but crack under blunt blows.
@@ -57,7 +57,7 @@ Optional:
 
 ## Install
 
-1. Download `StoneSkin-<version>.zip` from the Releases page.
+1. Download `BodySchool-<version>.zip` from the Releases page.
 2. Close Exanima.
 3. Copy the `mods` folder from the ZIP into your Exanima game folder, so you end
    up with `Exanima\mods\com.necrosis.stoneskin`.
@@ -73,7 +73,7 @@ lack the focus to cast, you get a short message and the game's refusal sound.
 
 ## Settings
 
-Open Settings > Mod Settings > Stone Skin:
+Open Settings > Mod Settings > Body School:
 
 | Setting | What it does |
 |---|---|
@@ -126,7 +126,7 @@ Pass both options: their built-in defaults are only for the author's machine.
 variable.
 
 This writes the mod folder to `dist/mods/com.necrosis.stoneskin/` and the
-release to `dist/StoneSkin-<version>.zip`, with a `.sha256` file beside it. An
+release to `dist/BodySchool-<version>.zip`, with a `.sha256` file beside it. An
 earlier build in `dist/mods/` is moved to `dist/previous/` first. Other options:
 
 - `--zip-only` packages the mod folder already in `dist/` without rebuilding.
