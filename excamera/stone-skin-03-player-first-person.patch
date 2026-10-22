@@ -1,0 +1,188 @@
+diff --git src/mod/headwear_render.inl src/mod/headwear_render.inl
+index b2e43ae..d5d7daf 100644
+--- src/mod/headwear_render.inl
++++ src/mod/headwear_render.inl
+@@ -32,8 +32,18 @@ static thread_local WearScope wearScope;
+ static thread_local bool wearDrawing = false;
+ // Stone skin (stone_skin.inl, included after this file) rides the same submit and draw hooks.
+ static void stoneSkinPass();
+-static bool stoneSkinSubmission(uintptr_t node);
+-static bool stoneSkinDraw(uintptr_t node, uintptr_t material, bool bind);
++static bool stoneSkinSubmission(uintptr_t node, bool ownBody = false);
++static bool stoneSkinDraw(uintptr_t node, uintptr_t material, bool bind, bool ownBody = false);
++// The player's own skinned mesh stays with the headwear path in first person; its native body
++// runs take the stone maps there (cueLock held for all three).
++struct StoneSwap {
++    bool on = false, swapped = false;
++    unsigned stone[3]{}, originals[3]{};
++    void (APIENTRY* bind)(GLuint, GLsizei, const GLuint*) = nullptr;
++};
++static bool stoneSkinWearBegin(uintptr_t node, uintptr_t material, StoneSwap& swap);
++static void stoneSkinWearRun(StoneSwap& swap, bool stone);
++static void stoneSkinWearEnd(StoneSwap& swap);
+ 
+ struct WearVertex { float position[3], normal[3], tangent[4], velocity[3]; };
+ struct WearScratch {
+@@ -495,13 +505,24 @@ inline bool emitWearNativeOnly(const WearPlan& plan, bool bind) {
+         glGetIntegerv(0x8895, &elementBuffer);
+         if (!ownedNativeSwap(cueCurrentDC()) || GLuint(elementBuffer) != plan.buffer || glGetError() != GL_NO_ERROR)
+             return false;
+-        for (unsigned f = 0; f < plan.count;) {
+-            const auto kind = wearScratch().faces[f];
+-            unsigned end = f + 1;
+-            while (end < plan.count && wearScratch().faces[end] == kind) ++end;
+-            if (kind == fp::wear::Face::native) wearDrawRange(plan, f, end - f);
+-            else headwearRenderHidden.fetch_add(end - f, std::memory_order_relaxed);
+-            f = end;
++        StoneSwap swap{};
++        stoneSkinWearBegin(plan.node, plan.material, swap);
++        __try {
++            for (unsigned f = 0; f < plan.count;) {
++                const auto kind = wearScratch().faces[f];
++                const bool body = wearScratch().tags[f] == 0;
++                unsigned end = f + 1;
++                while (end < plan.count && wearScratch().faces[end] == kind && (!swap.on || (wearScratch().tags[end] == 0) == body)) ++end;
++                if (kind == fp::wear::Face::native) {
++                    stoneSkinWearRun(swap, body);
++                    wearDrawRange(plan, f, end - f);
++                } else {
++                    headwearRenderHidden.fetch_add(end - f, std::memory_order_relaxed);
++                }
++                f = end;
++            }
++        } __finally {
++            stoneSkinWearEnd(swap);
+         }
+         emitted = true;
+     } __finally {
+@@ -531,7 +552,9 @@ inline bool emitWearPlan(const WearPlan& plan, bool bind) {
+         if (!captureWearGl(plan, api, state)) return false;
+         bool stable = plan.stable;
+         bool mounted = false;
++        StoneSwap swap{};
+         __try {
++            stoneSkinWearBegin(plan.node, plan.material, swap);
+             if (stable && !owner->resources.ready() && !owner->resources.prepare(g)) stable = false;
+             if (stable && !owner->resources.headwearVbo) g.genBuffers(1, &owner->resources.headwearVbo);
+             if (stable && (!owner->resources.headwearVbo || glGetError() != GL_NO_ERROR)) stable = false;
+@@ -542,10 +565,12 @@ inline bool emitWearPlan(const WearPlan& plan, bool bind) {
+             }
+             for (unsigned f = 0; f < plan.count;) {
+                 const auto kind = wearScratch().faces[f];
++                const bool body = wearScratch().tags[f] == 0;
+                 unsigned end = f + 1;
+-                while (end < plan.count && wearScratch().faces[end] == kind) ++end;
++                while (end < plan.count && wearScratch().faces[end] == kind && (!swap.on || (wearScratch().tags[end] == 0) == body)) ++end;
+                 const bool gear = kind == fp::wear::Face::gear;
+                 if (kind == fp::wear::Face::native || (gear && stable)) {
++                    stoneSkinWearRun(swap, body && kind == fp::wear::Face::native);
+                     if (gear != mounted) {
+                         if (gear) {
+                             mountWearAttributes(g, plan, owner->resources.headwearVbo);
+@@ -569,6 +594,7 @@ inline bool emitWearPlan(const WearPlan& plan, bool bind) {
+             }
+             emitted = true;
+         } __finally {
++            stoneSkinWearEnd(swap);
+             g.bindVertexArray(GLuint(state.vao));
+             if (plan.stable) {
+                 restoreWearAttributes(g, state);
+@@ -667,6 +693,10 @@ inline void wearDrawBody(uintptr_t material, bool bind, uintptr_t caller) {
+             ReleaseSRWLockExclusive(&wearScratchLock);
+         }
+     }
++    // The player's own mesh with nothing for the headwear path to hide (no head faces in this
++    // material) still takes the stone maps when the player is stone.
++    if (!handled && caller == expected && submitted.node && submitted.material == material && !wearDrawing && !cueGlDepth &&
++        stoneSkinDraw(submitted.node, material, bind, true)) return;
+     if (!handled)
+         fp::profile::invoke<fp::profile::Hook::wearDrawNative>(bind ? originalWearDraw : originalWearDrawBound, material);
+ }
+diff --git src/mod/stone_skin.inl src/mod/stone_skin.inl
+index 63ccb08..7bc53e8 100644
+--- src/mod/stone_skin.inl
++++ src/mod/stone_skin.inl
+@@ -63,10 +63,11 @@ static bool stoneSkinActor(uintptr_t actor) {
+ }
+ 
+ // The submission gate: a marked character's skinned mesh (its _SKIN child), outside the player's
+-// own first-person head scope (the headwear path keeps that).
+-static bool stoneSkinSubmission(uintptr_t node) {
++// own first-person head scope (the headwear path keeps that and swaps the maps itself) unless
++// ownBody: the headwear path left that draw alone.
++static bool stoneSkinSubmission(uintptr_t node, bool ownBody) {
+     if (!stoneScope.count || !readable(node, 0x2a0) || strncmp(nodeName(node), "_SKIN", 5)) return false;
+-    if (wearScope.colour && std::binary_search(wearScope.nodes, wearScope.nodes + wearScope.nodeCount, node)) return false;
++    if (!ownBody && wearScope.colour && std::binary_search(wearScope.nodes, wearScope.nodes + wearScope.nodeCount, node)) return false;
+     return stoneSkinActor(*(uintptr_t*)(node + field::sceneNode::parent));
+ }
+ 
+@@ -189,8 +190,8 @@ static bool stoneSkinEmit(const WearPlan& plan, bool bind, const unsigned char*
+     return emitted;
+ }
+ 
+-static bool stoneSkinDrawBody(uintptr_t node, uintptr_t material, bool bind) {
+-    if (!stoneSkinSubmission(node)) return false;
++static bool stoneSkinDrawBody(uintptr_t node, uintptr_t material, bool bind, bool ownBody) {
++    if (!stoneSkinSubmission(node, ownBody)) return false;
+     GLuint originals[3]{};
+     if (!stoneSkinOriginals(material, originals)) return false;
+     const int lastFace = *(int*)(node + 0x268), lastVertex = *(int*)(node + 0x288);
+@@ -210,21 +211,52 @@ static bool stoneSkinDrawBody(uintptr_t node, uintptr_t material, bool bind) {
+     return stoneSkinEmit(plan, bind, stone.data(), originals);
+ }
+ 
+-static bool stoneSkinDrawGuarded(uintptr_t node, uintptr_t material, bool bind) {
+-    try { return stoneSkinDrawBody(node, material, bind); }
++static bool stoneSkinDrawGuarded(uintptr_t node, uintptr_t material, bool bind, bool ownBody) {
++    try { return stoneSkinDrawBody(node, material, bind, ownBody); }
+     catch (const std::exception&) { stoneSkinFaults.fetch_add(1, std::memory_order_relaxed); return false; }
+ }
+ // true: the draw was made here (stone where the body shows, the rest native) and the native one is skipped.
+-static bool stoneSkinDraw(uintptr_t node, uintptr_t material, bool bind) {
++static bool stoneSkinDraw(uintptr_t node, uintptr_t material, bool bind, bool ownBody) {
+     if (!stoneScope.count || !wearScope.colourPass) return false;
+     bool drawn = false;
+     __try {
+-        drawn = stoneSkinDrawGuarded(node, material, bind);
++        drawn = stoneSkinDrawGuarded(node, material, bind, ownBody);
+     } __except (EXCEPTION_EXECUTE_HANDLER) {
+         stoneSkinFaults.fetch_add(1, std::memory_order_relaxed);
+         drawn = false;
+     }
+     if (drawn) stoneSkinDraws.fetch_add(1, std::memory_order_relaxed);
+-    else if (stoneSkinSubmission(node)) stoneSkinFallbacks.fetch_add(1, std::memory_order_relaxed);
++    else if (stoneSkinSubmission(node, ownBody)) stoneSkinFallbacks.fetch_add(1, std::memory_order_relaxed);
+     return drawn;
+ }
++
++// The headwear path's own draws of the player's skinned mesh: its native body runs take the
++// stone maps while the player is stone. cueLock is held by the caller; nothing here throws.
++static bool stoneSkinWearBegin(uintptr_t node, uintptr_t material, StoneSwap& swap) {
++    swap = {};
++    __try {
++        if (!stoneScope.count || !wearScope.colourPass || !readable(node, 0x2a0) || strncmp(nodeName(node), "_SKIN", 5) ||
++            !stoneSkinActor(*(uintptr_t*)(node + field::sceneNode::parent)) || !stoneSkinOriginals(material, swap.originals)) return false;
++        StoneGl s{};
++        if (!loadStoneGl(s)) return false;
++        auto* owner = prepareCue();
++        if (!owner || !stoneSkinTextures(owner->resources, s)) return false;
++        for (unsigned t = 0; t < 3; ++t) swap.stone[t] = owner->resources.stoneTex[t];
++        swap.bind = s.bind;
++        swap.on = true;
++    } __except (EXCEPTION_EXECUTE_HANDLER) {
++        stoneSkinFaults.fetch_add(1, std::memory_order_relaxed);
++        swap = {};
++    }
++    if (swap.on) stoneSkinDraws.fetch_add(1, std::memory_order_relaxed);
++    return swap.on;
++}
++static void stoneSkinWearRun(StoneSwap& swap, bool stone) {
++    if (!swap.on || swap.swapped == stone) return;
++    swap.bind(0, 3, stone ? swap.stone : swap.originals);
++    swap.swapped = stone;
++}
++static void stoneSkinWearEnd(StoneSwap& swap) {
++    if (swap.on && swap.swapped) swap.bind(0, 3, swap.originals);
++    swap.swapped = false;
++}

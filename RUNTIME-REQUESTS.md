@@ -4,6 +4,9 @@ Stone Skin (`com.necrosis.stoneskin`) needs two additions to the script runtime
 (E:\ExanimaLua). Both are additive (a new `api.revision`); the addon already
 lists them under `optional` and only warns while they are missing.
 
+Since 0.2.0 the addon only ever targets `"player"` (the effect is the player's,
+from an elixir), so record-id targets are optional for it.
+
 ## 1. `characters.damage_scale`: damage multipliers per damage type
 
 ```lua
