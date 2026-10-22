@@ -1,0 +1,97 @@
+diff --git src/stone_skin.h src/stone_skin.h
+index 3a60b08..a3c15b2 100644
+--- src/stone_skin.h
++++ src/stone_skin.h
+@@ -34,14 +34,26 @@ inline float noise(float x, float y, int period, uint32_t salt) {
+     const float bottom = at(ix, iy + 1) + (at(ix + 1, iy + 1) - at(ix, iy + 1)) * sx;
+     return top + (bottom - top) * sy;
+ }
+-inline float grain(float u, float v, uint32_t salt) { // u, v in 0..1
++// Octaves from `low` to `high` lattice steps across the texture (u, v in 0..1), 0..1.
++inline float fbm(float u, float v, int low, int high, uint32_t salt, float gain = .55f) {
+     float sum = 0, amp = .5f, norm = 0;
+-    for (int period = 16; period <= 128; period *= 2, amp *= .55f) {
++    for (int period = low; period <= high; period *= 2, amp *= gain) {
+         sum += amp * noise(u * float(period), v * float(period), period, salt + uint32_t(period));
+         norm += amp;
+     }
+     return sum / norm;
+ }
++inline float grain(float u, float v, uint32_t salt) { return fbm(u, v, 16, 128, salt); }
++// Sharp creases where the noise crosses its middle: fractures and grit, 0..1 with 1 on a crease.
++inline float ridged(float u, float v, int low, int high, uint32_t salt) {
++    float sum = 0, amp = .5f, norm = 0;
++    for (int period = low; period <= high; period *= 2, amp *= .5f) {
++        const float r = 1.f - std::fabs(2.f * noise(u * float(period), v * float(period), period, salt + uint32_t(period)) - 1.f);
++        sum += amp * r * r;
++        norm += amp;
++    }
++    return sum / norm;
++}
+ inline float smooth(float a, float b, float x) {
+     const float t = std::fmin(1.f, std::fmax(0.f, (x - a) / (b - a)));
+     return t * t * (3 - 2 * t);
+@@ -90,27 +102,42 @@ inline void generate(Maps& out) {
+     const float crack = .022f, bevel = .3f;
+     for (unsigned y = 0; y < n; ++y) for (unsigned x = 0; x < n; ++x) {
+         const float u = (float(x) + .5f) / float(n), v = (float(y) + .5f) / float(n);
+-        const Sample s = voronoi(u * float(cells), v * float(cells));
++        // Warped cells, so plate edges wander and chip instead of running straight.
++        const float wu = u + .018f * (fbm(u, v, 6, 24, 41) - .5f) + .004f * (fbm(u, v, 48, 192, 43) - .5f);
++        const float wv = v + .018f * (fbm(u, v, 6, 24, 42) - .5f) + .004f * (fbm(u, v, 48, 192, 44) - .5f);
++        Sample s = voronoi(wu * float(cells), wv * float(cells));
++        s.border = std::fmax(0.f, s.border + .03f * (fbm(u, v, 32, 128, 45) - .55f));
+         const uint32_t h = hash(s.id, 7, 0x77);
+-        // A rounded slab: flat crown, quarter-round bevel down into the crevice, each plate a little tilted.
++        // A rounded slab: uneven crown, worn bevel down into the crevice, each plate a little tilted.
+         const float t = std::fmin(1.f, std::fmax(0.f, (s.border - crack) / bevel));
+         const float bevelled = std::sqrt(1.f - (1.f - t) * (1.f - t));
+         const float tiltX = unit(h) - .5f, tiltY = unit(h >> 8) - .5f;
+         const float crown = .85f + .15f * unit(h >> 16) + .18f * (tiltX * s.dx + tiltY * s.dy) - .35f * (s.dx * s.dx + s.dy * s.dy);
+-        const float rough = grain(u, v, 3) - .5f;
++        // Rock surface: lumps, gritty pitting, fine fractures across the plates.
++        const float lumps = fbm(u, v, 12, 48, 3) - .5f, grit = fbm(u, v, 96, 256, 5, .7f) - .5f;
++        const float fracture = smooth(.86f, .97f, ridged(u, v, 20, 80, 7)) * smooth(.45f, .65f, fbm(u, v, 8, 16, 8));
++        const float pits = smooth(.62f, .78f, fbm(u, v, 64, 256, 9, .6f));
+         const size_t k = size_t(y) * n + x;
+-        height[k] = s.border < crack ? -.15f * (1.f - s.border / crack) : bevelled * crown + .05f * rough;
+-        occlusion[k] = .16f + .84f * smooth(0.f, crack + bevel * .7f, s.border);
+-        // Orange-brown stone; each plate its own shade, darker toward its rim, a fine grain over all.
+-        const float shade = .78f + .32f * unit(h >> 4), warm = .9f + .2f * unit(h >> 12);
+-        const float rim = .82f + .18f * smooth(crack, crack + bevel, s.border);
+-        const float g = .86f + .28f * grain(u, v, 21);
+-        float r = .8f * shade * warm * rim * g, gr = .46f * shade * rim * g, b = .21f * shade * (2.f - warm) * rim * g;
+-        if (s.border < crack) { r = .17f; gr = .09f; b = .05f; }
++        height[k] = s.border < crack ? -.15f * (1.f - s.border / crack)
++                  : bevelled * crown + .16f * lumps * t + .07f * grit - .14f * fracture - .06f * pits;
++        occlusion[k] = (.16f + .84f * smooth(0.f, crack + bevel * .7f, s.border)) * (1.f - .45f * fracture) * (1.f - .25f * pits);
++        // Weathered orange-brown stone: each plate its own shade, mottled, flecked, greyer where worn.
++        const float shade = .74f + .32f * unit(h >> 4), warm = .88f + .22f * unit(h >> 12);
++        const float rim = .8f + .2f * smooth(crack, crack + bevel, s.border);
++        const float mottle = .78f + .44f * fbm(u, v, 8, 64, 21), fleck = fbm(u, v, 128, 256, 23, .8f);
++        const float speck = fleck > .68f ? 1.18f : fleck < .3f ? .8f : 1.f;
++        const float grey = .1f + .18f * fbm(u, v, 6, 24, 25); // share of grey dust over the orange
++        float r = .86f * shade * warm, gr = .49f * shade, b = .22f * shade * (2.f - warm);
++        const float lum = .3f * r + .59f * gr + .11f * b;
++        r += (lum - r) * grey; gr += (lum - gr) * grey; b += (lum - b) * grey;
++        const float m = rim * mottle * speck * (1.f + .5f * grit);
++        r *= m; gr *= m; b *= m;
++        if (s.border < crack) { r = .13f; gr = .075f; b = .045f; }
+         colour[k * 3] = r * occlusion[k];
+         colour[k * 3 + 1] = gr * occlusion[k];
+         colour[k * 3 + 2] = b * occlusion[k];
+-        gloss[k] = s.border < crack ? 0.f : .06f + .08f * t * crown;
++        // Stone is barely glossy: a faint dull sheen on the worn crowns only.
++        gloss[k] = s.border < crack ? 0.f : (.015f + .03f * t * fbm(u, v, 16, 64, 27)) * (1.f - pits);
+     }
+     // Level 0, then box-filtered levels down to 1 x 1 (normals renormalised).
+     size_t total = 0;
+@@ -128,7 +155,7 @@ inline void generate(Maps& out) {
+         out.diffuse[o] = byte(colour[k * 3]); out.diffuse[o + 1] = byte(colour[k * 3 + 1]);
+         out.diffuse[o + 2] = byte(colour[k * 3 + 2]); out.diffuse[o + 3] = 255;
+         out.specular[o] = out.specular[o + 1] = out.specular[o + 2] = byte(gloss[k] * occlusion[k]);
+-        out.specular[o + 3] = byte(.18f * occlusion[k]);
++        out.specular[o + 3] = byte(.06f * occlusion[k]);
+         out.normal[o] = byte(nx * .5f + .5f); out.normal[o + 1] = byte(ny * .5f + .5f);
+         out.normal[o + 2] = byte(nz * .5f + .5f); out.normal[o + 3] = out.normal[o];
+     }
