@@ -2,3 +2,9 @@ __pycache__/
 *.pyc
 .claude/
 /dist/
+
+# Kept on disk, not published: development notes, tests and tools that do not build the mod
+/RUNTIME-REQUESTS.md
+/test_stoneskin.py
+/tests/
+/excamera/stone-lit-tiled.png
