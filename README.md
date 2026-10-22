@@ -1,54 +1,139 @@
-# Stone Skin
+# Body School (Stone Skin)
 
-Drink a Stoneskin Elixir and for a minute your skin sets into thick, cracked
-rock plates, like The Thing. Edges skate off them (cut x0.35, pierce x0.6) and
-blunt blows shatter them (crush x1.6).
+Adds the Body page to Exanima's spell book. Its first power, Stone Skin, hardens
+your skin into craggy stone plates that turn edges but crack under blunt blows.
+Seven more powers strengthen and speed your body, heal it, or turn the same
+magic against your foes. You learn and cast them like the game's own powers,
+from the spell book and the power wheel.
 
-Two parts:
+## Features
 
-- **The Lua addon** (`com.necrosis.stoneskin`, this repo). The effect is the
-  player's only, timed or held (`scripts/effect.lua`: start, hold, stop), so
-  other triggers can switch it on later. Triggers now: the Stoneskin Elixir
-  (record 0x5A0: double-click it, click anything, it is drunk; found in
-  civilian loot, and one appears at your feet the first time a save is played
-  with the mod), and game scripts via `LuaEvent(StoneSkin, n)` (n seconds, -1
-  held, 0 ends it). Settings > Mod Settings > Stone Skin: duration, the three
-  multipliers, the look, notices, the starter elixir.
-- **ExCamera's stone look** (`excamera/stone-skin-0*.patch`, applied in order by
-  the ExCamera owner in E:\ExCamera). While the player is marked, the body faces
-  are drawn with procedural stone maps (Voronoi plates, rounded slab bevel,
-  grit, pits, fractures, crevice occlusion) in place of the skin textures,
-  through the game's own material program, so the game's lights and shadows
-  shade them. Worn pieces stay as they are. In first person the headwear path
-  keeps hiding the head and swaps the maps on the visible body itself (03).
-  `excamera/stone-lit-tiled.png` is an offline render of the maps.
+Held powers are cast once to start and again to release. They cost focus when
+cast, then drain focus each second while they last; Sustain halves the drain. A
+held power ends by itself when your focus runs dry. Instant powers catch every
+foe fighting you within about 4 m (up to eight of them) and cost focus only if
+they catch someone.
 
-## Needs
+| Power | Type | What it does |
+|---|---|---|
+| Stone Skin | Held | Your skin hardens into stone plates. While it lasts you take less cut and pierce damage and more crush damage, and blows on you sound like striking stone. |
+| Might | Held | Drives your muscles past their limits: heavy weapons come round faster and your pushes land harder. It strengthens the body, not the blow. |
+| Quicken | Held | Every swing, recovery and step comes quicker. |
+| Petrify | Instant | Turns the foes around you to stone for a few seconds. They stand all but frozen, blades glance off them and blunt blows shatter; then the stone falls away. |
+| Weaken | Instant | Drains the strength of the foes around you for a while: their weapons drag and their blows land softer. |
+| Slow | Instant | Weighs down the foes around you for a while: every swing, recovery and step of theirs lags. |
+| Regenerate | Held | Your wounds close and broken limbs mend, a little each moment, worst first. |
+| Mend | Held | Heals the nearest follower or friend within arm's reach the same way. |
 
-- Script runtime with `characters.set_damage_scale("player", ...)` and
-  `characters.set_mark("player", ...)` (RUNTIME-REQUESTS.md). Without them the
-  elixir is still drunk and notices show, but nothing else changes.
-- ExCamera with the patches, for the look; OpenGL 4.5.
+Default damage taken while Stone Skin lasts: cut 35%, pierce 60%, crush 160%.
 
-## Build and check
+**Learning.** Stone Skin is the root of the page. Might, Quicken and Petrify
+branch from Stone Skin; Weaken from Might; Slow from Quicken; Regenerate from
+Might; Mend from Regenerate. As in the game's own trees, some nodes also need an
+Insight technique: Petrify, Weaken and Slow (Inversion), Regenerate (Coherence)
+and Mend (Expansion).
+
+**Feedback.** Casts play the game's own thaumaturgy sounds and cast motions, and
+a brief arc of light leaves your casting hand.
+
+The page's tree and its icons are new files made for this mod; no game file is
+replaced.
+
+## Requirements
+
+- Exanima (Steam).
+- EMTK with the script-runtime startup patch, shipped with the Exanima Lua
+  Runtime release.
+- Exanima Lua Runtime 0.28.0 or later.
+
+Optional:
+
+- **ExCamera**, built with the stone-look patches in this repository's
+  `excamera` folder, draws your skin (and petrified foes) as rock plates. The
+  game's own lights and shadows shade them. Without it, Stone Skin and Petrify
+  still work but look unchanged.
+- **Injuries** (`com.necrosis.injuries`) does the healing for Regenerate and
+  Mend. Without it these two powers still drain focus but heal nothing.
+
+## Install
+
+1. Download `StoneSkin-<version>.zip` from the Releases page.
+2. Close Exanima.
+3. Copy the `mods` folder from the ZIP into your Exanima game folder, so you end
+   up with `Exanima\mods\com.necrosis.stoneskin`.
+4. Enable Body School in your EMTK profile.
+5. Launch the game through EMTK.
+
+## Using it
+
+When you load a game, the mod teaches your character Stone Skin, the root of the
+Body page, so the page can be opened in the spell book. Learn further powers
+there, put them on the power wheel and cast them like any other power. If you
+lack the focus to cast, you get a short message and the game's refusal sound.
+
+## Settings
+
+Open Settings > Mod Settings > Stone Skin:
+
+| Setting | What it does |
+|---|---|
+| Cost | Focus paid when your skin hardens. |
+| Drain | Focus drained each second while it lasts. Sustain halves it. |
+| Cut | Cut damage you take while stone. |
+| Pierce | Pierce damage you take while stone. |
+| Crush | Crush (blunt) damage you take while stone. |
+| Rock look | Draws your skin as rock plates while it lasts. Needs ExCamera. |
+| Messages | On-screen messages when it starts and ends. |
+
+The tuning for the other powers is in `scripts/config.lua` inside the mod
+folder.
+
+## Saves and uninstalling
+
+- The mod writes nothing into your save. Every effect ends when you return to
+  the menu or quit. Curses on foes end when you change level, and foes get their
+  own strength, speed and skill back when a curse ends.
+- Powers your character learns on the Body page are kept by the game with the
+  character. Back up your saves before removing the mod.
+- To uninstall, disable Body School in your EMTK profile, or delete
+  `Exanima\mods\com.necrosis.stoneskin`.
+
+## For other mods
+
+Game scripts can switch Stone Skin on the player with `LuaEvent(StoneSkin, n)`:
+`n` seconds, `-1` to hold it until ended, `0` to end it.
+
+Another mod can make an NPC cast a Body power:
+
+- `addons.send("com.necrosis.stoneskin", "body.cast", {caster = <characters.read row or record id>, power = "stone" | "might" | "quicken" | "petrify" | "weaken" | "slow", seconds = <optional>})`
+- or a game script line `LuaEvent(BodyCast<Power>, <caster record id>)`, where
+  `<Power>` is Stone, Might, Quicken, Petrify, Weaken or Slow.
+
+## Building from source
+
+The build writes the Body page's power tree with the ExaniMate power-tree writer
+and paints the icon sheet with `icon.py`. It reads one file from the installed
+game, the Energy page's icon sheet, only to copy its texture format; none of its
+pixels are used. You need Python 3 with Pillow, and the ExaniMate service folder
+(which holds the `exanimate` format library).
 
 ```
-python -X utf8 -B test_stoneskin.py      # offline: the addon against a stubbed API
-python -B tools/make_dist.py             # dist/mods/com.necrosis.stoneskin (reads the installed objdb)
+python -X utf8 -B release.py --game <Exanima folder> --exanimate <ExaniMate service folder>
 ```
 
-## ExCamera patches: what they read and change
+Pass both options: their built-in defaults are only for the author's machine.
+`--exanimate` can instead come from the `EXANIMATE_SERVICE` environment
+variable.
 
-Reads only: the mark list from ScriptRuntime.dll's `character_mark_nodes`
-(version 1); a draw's `_SKIN` node name and parent; the node's face tags
-(`+0x2F8`, tag 0 = the body); the material's texture set (`+0x100`, objects at
-`+0x10/+0x18/+0x20`, GL target `+0x40`, name `+0x58`), which the game's mesh
-submit (0x200770) binds to units 0, 1, 2 through 0x6FC30. Writes no game memory.
-GL: three textures made once per context with direct-state calls, bound with
-`glBindTextures(0, 3, ...)` (the active unit is untouched) for body face runs,
-and the material's own three bound back right after. Uses the existing
-headwearRender submit/draw hooks; no new hook or signature.
+This writes the mod folder to `dist/mods/com.necrosis.stoneskin/` and the
+release to `dist/StoneSkin-<version>.zip`, with a `.sha256` file beside it. An
+earlier build in `dist/mods/` is moved to `dist/previous/` first. Other options:
 
-Inferred, not seen in game: units 0/1/2 are diffuse/specular/normal (the order
-the set holds `_d`, `_s`, `_n`), the normal map is tangent space with +Y up, and
-skin materials carry that texture set. Without the set the draw stays native.
+- `--zip-only` packages the mod folder already in `dist/` without rebuilding.
+- `--tag v<version>` stops unless the tag matches the version in
+  `manifest.toml`.
+
+The `excamera` folder holds the ExCamera patches for the stone look; they are
+applied to ExCamera's source, not shipped in this mod's ZIP.
+
+Author: NecrosisDev
