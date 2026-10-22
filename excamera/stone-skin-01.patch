@@ -1,0 +1,494 @@
+diff --git src/cue_resources.h src/cue_resources.h
+index 7dad7d6..fe376e2 100644
+--- src/cue_resources.h
++++ src/cue_resources.h
+@@ -10,6 +10,16 @@ struct CueResources {
+     unsigned headwearVbo = 0;
+     // Optional VR hand stream, same owner and lifetime.
+     unsigned handVbo = 0, handEbo = 0;
++    // Stone skin maps (mod/stone_skin.inl): diffuse, specular, normal. Their own liveness, so a
++    // cue rebuild never drops them; retired with the context.
++    unsigned stoneTex[3]{};
++    bool stoneLive() const { return stoneTex[0] || stoneTex[1] || stoneTex[2]; }
++    template <class Api> void retireStone(Api& g) {
++        for (unsigned& t : stoneTex) {
++            if (t) g.deleteTextures(1, &t);
++            t = 0;
++        }
++    }
+     // Optional screen-space view effects (mod/view_effects.inl). Each effect has
+     // its own program, so a driver rejecting one leaves the others and the cue.
+     // They share the fullscreen quad and the copied scene colour/depth.
+@@ -67,7 +77,7 @@ struct CueResources {
+     // Cue/headwear handles. Their incomplete construction must not tear down the
+     // independently built view effects, and vice versa.
+     bool cueLive() const { return program || vao || vbo || headwearVbo || handVbo || handEbo || vertex || fragment || borrowedBindings; }
+-    bool live() const { return cueLive() || viewLive(); }
++    bool live() const { return cueLive() || viewLive() || stoneLive(); }
+     bool ready() const { return program && vao && vbo && color >= 0 && !borrowedBindings; }
+ 
+     template <class Api> static void drain(Api& g) {
+@@ -217,6 +227,7 @@ struct CueResources {
+     template <class Api> void retire(Api& g) {
+         retireCue(g);
+         if (viewLive()) retireView(g);
++        if (stoneLive()) retireStone(g);
+     }
+     template <class Api> void retireCue(Api& g) {
+         restoreBindings(g);
+diff --git src/first_person.cpp src/first_person.cpp
+index 597655b..193f949 100644
+--- src/first_person.cpp
++++ src/first_person.cpp
+@@ -109,6 +109,7 @@ static MH_STATUS disableStereoHooks() { return MH_OK; }
+ #include "mod/view_effects.inl"
+ #include "mod/frame.inl"
+ #include "mod/headwear_render.inl"
++#include "mod/stone_skin.inl"
+ #include "mod/xr_bones.inl"
+ #include "mod/blade.inl"
+ #include "mod/camera.inl"
+diff --git src/mod/headwear_render.inl src/mod/headwear_render.inl
+index b64027c..b2e43ae 100644
+--- src/mod/headwear_render.inl
++++ src/mod/headwear_render.inl
+@@ -30,6 +30,10 @@ struct WearScope {
+ };
+ static thread_local WearScope wearScope;
+ static thread_local bool wearDrawing = false;
++// Stone skin (stone_skin.inl, included after this file) rides the same submit and draw hooks.
++static void stoneSkinPass();
++static bool stoneSkinSubmission(uintptr_t node);
++static bool stoneSkinDraw(uintptr_t node, uintptr_t material, bool bind);
+ 
+ struct WearVertex { float position[3], normal[3], tangent[4], velocity[3]; };
+ struct WearScratch {
+@@ -584,8 +588,9 @@ inline bool emitWearPlan(const WearPlan& plan, bool bind) {
+ 
+ inline WearSubmission wearSubmission(uintptr_t node, int index) {
+     if (wearDrawing || cueGlDepth || index < 0 || index >= 256) return {};
+-    // The player's hand draws are tickets for the VR hand whatever the headwear hints hold.
+-    const bool hand = wearScope.colourPass && (trackedHandSubmission(node) || trackedBodySubmission(node));
++    // The player's hand draws are tickets for the VR hand whatever the headwear hints hold; a stone
++    // character's skinned mesh is a ticket for the stone skin.
++    const bool hand = wearScope.colourPass && (trackedHandSubmission(node) || trackedBodySubmission(node) || stoneSkinSubmission(node));
+     if (!hand && (!headwearRenderReady.load(std::memory_order_relaxed) || !wearScope.colour ||
+        (wearScope.complete && !std::binary_search(wearScope.nodes, wearScope.nodes + wearScope.nodeCount, node)))) return {};
+     if (!readable(node, 0x1d8) || index > *(int*)(node + 0x1c8)) return {};
+@@ -633,6 +638,8 @@ inline void wearDrawBody(uintptr_t material, bool bind, uintptr_t caller) {
+         trackedHandDraw(submitted.node, material, bind)) return;
+     if (caller == expected && submitted.node && submitted.material == material && !wearDrawing && !cueGlDepth &&
+         trackedBodyHidden(submitted.node, material, bind)) return; // hands only: the body draw is dropped, or cut down to the faces the finger bones carry
++    if (caller == expected && submitted.node && submitted.material == material && !wearDrawing && !cueGlDepth &&
++        stoneSkinDraw(submitted.node, material, bind)) return; // a stone character: body faces with the stone maps
+     if (caller == expected && submitted.node && submitted.material == material &&
+        headwearRenderReady.load(std::memory_order_relaxed) && wearScope.colour && !wearDrawing && !cueGlDepth &&
+        (!wearScope.complete || std::binary_search(wearScope.materials, wearScope.materials + wearScope.count, material)) &&
+@@ -690,6 +697,7 @@ inline void wearPassBody(uintptr_t list, uintptr_t sector, unsigned flags) {
+             wearScope = {};
+         }
+         wearScope.colourPass = true; // after the scope is settled, so no assignment above clears it
++        stoneSkinPass(); // guards its own call into the runtime
+         fp::profile::invoke<fp::profile::Hook::wearPassNative>(originalWearPass, list, sector, flags);
+     } __finally {
+         wearScope = previous;
+diff --git src/mod/stone_skin.inl src/mod/stone_skin.inl
+new file mode 100644
+index 0000000..63ccb08
+--- /dev/null
++++ src/mod/stone_skin.inl
+@@ -0,0 +1,230 @@
++// Stone skin: characters a script-runtime addon marks (Stone Skin, mark "stoneskin.look") are
++// drawn with rock plates. Included after headwear_render.inl, whose submit/draw hooks carry it.
++// Only the body faces (tag 0) of a marked character's _SKIN mesh change, and only their
++// diffuse/specular/normal units (0..2, from material +0x100: +0x10, +0x18, +0x20), which are
++// put back to the material's own textures after the draw. The game's program, lights and
++// shadows shade the plates. No native memory is written. The marks come from
++// ScriptRuntime.dll's character_mark_nodes export (marks version 1); without it nothing changes.
++#include "../stone_skin.h"
++
++static constexpr const char* stoneSkinMark = "stoneskin.look";
++static constexpr unsigned stoneSkinMaxMarked = 64;
++using StoneMarkNodes = int (*)(const char*, uintptr_t*, uint32_t*, int);
++using StoneMarksVersion = uint32_t (*)();
++using StoneBindTextures = void (APIENTRY*)(GLuint, GLsizei, const GLuint*);
++using StoneCreateTextures = void (APIENTRY*)(GLenum, GLsizei, GLuint*);
++using StoneTextureStorage = void (APIENTRY*)(GLuint, GLsizei, GLenum, GLsizei, GLsizei);
++using StoneTextureSubImage = void (APIENTRY*)(GLuint, GLint, GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, const void*);
++using StoneTextureParameter = void (APIENTRY*)(GLuint, GLenum, GLint);
++
++static std::atomic<StoneMarkNodes> stoneMarkNodes{nullptr};
++static std::atomic<ULONGLONG> stoneMarkProbed{0};
++static std::atomic<unsigned> stoneSkinDraws{0}, stoneSkinFallbacks{0}, stoneSkinFaults{0};
++
++struct StoneScope { uintptr_t actors[stoneSkinMaxMarked]{}; unsigned count = 0; };
++static thread_local StoneScope stoneScope;
++
++// The runtime's export, looked up again at most every two seconds until found. The module is
++// pinned once found, so the cached entry stays valid for the life of the process.
++static StoneMarkNodes stoneMarkExport() {
++    if (auto fn = stoneMarkNodes.load(std::memory_order_acquire)) return fn;
++    const ULONGLONG now = GetTickCount64();
++    if (now - stoneMarkProbed.load(std::memory_order_relaxed) < 2000) return nullptr;
++    stoneMarkProbed.store(now, std::memory_order_relaxed);
++    HMODULE runtime = nullptr;
++    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN, L"ScriptRuntime.dll", &runtime) || !runtime) return nullptr;
++    const auto version = reinterpret_cast<StoneMarksVersion>(GetProcAddress(runtime, "character_marks_version"));
++    const auto fn = reinterpret_cast<StoneMarkNodes>(GetProcAddress(runtime, "character_mark_nodes"));
++    if (!version || !fn || version() != 1) return nullptr;
++    stoneMarkNodes.store(fn, std::memory_order_release);
++    return fn;
++}
++
++// Once per colour pass: the marked characters' scene nodes (character +0x18).
++static void stoneSkinPass() {
++    stoneScope.count = 0;
++    const StoneMarkNodes fn = stoneMarkExport();
++    if (!fn) return;
++    uint32_t values[stoneSkinMaxMarked]{};
++    int count = 0;
++    __try { count = fn(stoneSkinMark, stoneScope.actors, values, int(stoneSkinMaxMarked)); }
++    __except (EXCEPTION_EXECUTE_HANDLER) { count = 0; stoneSkinFaults.fetch_add(1, std::memory_order_relaxed); }
++    if (count <= 0) return;
++    unsigned kept = 0;
++    for (int k = 0; k < count && k < int(stoneSkinMaxMarked); ++k)
++        if (values[k] && stoneScope.actors[k]) stoneScope.actors[kept++] = stoneScope.actors[k];
++    stoneScope.count = kept;
++}
++
++static bool stoneSkinActor(uintptr_t actor) {
++    for (unsigned k = 0; k < stoneScope.count; ++k)
++        if (stoneScope.actors[k] == actor) return true;
++    return false;
++}
++
++// The submission gate: a marked character's skinned mesh (its _SKIN child), outside the player's
++// own first-person head scope (the headwear path keeps that).
++static bool stoneSkinSubmission(uintptr_t node) {
++    if (!stoneScope.count || !readable(node, 0x2a0) || strncmp(nodeName(node), "_SKIN", 5)) return false;
++    if (wearScope.colour && std::binary_search(wearScope.nodes, wearScope.nodes + wearScope.nodeCount, node)) return false;
++    return stoneSkinActor(*(uintptr_t*)(node + field::sceneNode::parent));
++}
++
++struct StoneGl {
++    StoneBindTextures bind = nullptr;
++    StoneCreateTextures create = nullptr;
++    StoneTextureStorage storage = nullptr;
++    StoneTextureSubImage upload = nullptr;
++    StoneTextureParameter parameter = nullptr;
++};
++static bool loadStoneGl(StoneGl& s) {
++    return loadGl(s.bind, "glBindTextures") && loadGl(s.create, "glCreateTextures") &&
++           loadGl(s.storage, "glTextureStorage2D") && loadGl(s.upload, "glTextureSubImage2D") &&
++           loadGl(s.parameter, "glTextureParameteri");
++}
++
++// The maps (about 4 MB) are made once on a pool thread (about a quarter second), never on the
++// render thread; stone characters draw natively until they are ready. Kept for the process.
++static std::atomic<int> stoneMapsState{0}; // 0 not started, 1 making, 2 ready, 3 failed
++static fp::stone::Maps* stoneMaps = nullptr;
++static DWORD WINAPI stoneSkinMake(void*) {
++    auto* maps = new(std::nothrow) fp::stone::Maps{};
++    bool made = false;
++    if (maps) {
++        try { fp::stone::generate(*maps); made = true; }
++        catch (const std::exception&) {}
++    }
++    if (made) stoneMaps = maps;
++    else delete maps;
++    stoneMapsState.store(made ? 2 : 3, std::memory_order_release);
++    return 0;
++}
++static const fp::stone::Maps* stoneSkinMaps() {
++    const int state = stoneMapsState.load(std::memory_order_acquire);
++    if (state == 2) return stoneMaps;
++    int idle = 0;
++    if (state == 0 && stoneMapsState.compare_exchange_strong(idle, 1) &&
++        !QueueUserWorkItem(stoneSkinMake, nullptr, WT_EXECUTELONGFUNCTION))
++        stoneMapsState.store(3, std::memory_order_release);
++    return nullptr;
++}
++
++// Direct-state uploads, so no unit's binding or the active unit changes; cueLock held.
++static bool stoneSkinTextures(fp::CueResources& r, const StoneGl& s) {
++    if (r.stoneTex[0] && r.stoneTex[1] && r.stoneTex[2]) return true;
++    if (r.stoneTex[0] || r.stoneTex[1] || r.stoneTex[2]) return false; // a half-made set waits for retirement
++    const fp::stone::Maps* maps = stoneSkinMaps();
++    if (!maps) return false;
++    GLint major = 0, minor = 0; // once per context: direct-state textures and multi-bind need 4.5
++    glGetIntegerv(0x821B, &major);
++    glGetIntegerv(0x821C, &minor);
++    if (major < 4 || (major == 4 && minor < 5)) return false;
++    s.create(0x0DE1, 3, r.stoneTex);
++    const std::vector<uint8_t>* data[3] = {&maps->diffuse, &maps->specular, &maps->normal};
++    for (unsigned t = 0; t < 3; ++t) {
++        if (!r.stoneTex[t]) return false;
++        s.storage(r.stoneTex[t], GLsizei(fp::stone::levels), 0x8058 /* RGBA8 */, GLsizei(fp::stone::size), GLsizei(fp::stone::size));
++        for (unsigned l = 0, w = fp::stone::size; l < fp::stone::levels; ++l, w = w > 1 ? w / 2 : 1)
++            s.upload(r.stoneTex[t], GLint(l), 0, 0, GLsizei(w), GLsizei(w), 0x1908 /* RGBA */, GL_UNSIGNED_BYTE,
++                     data[t]->data() + maps->offset[l]);
++        s.parameter(r.stoneTex[t], 0x2801 /* MIN_FILTER */, 0x2703 /* LINEAR_MIPMAP_LINEAR */);
++        s.parameter(r.stoneTex[t], 0x2800 /* MAG_FILTER */, 0x2601 /* LINEAR */);
++        s.parameter(r.stoneTex[t], 0x2802 /* WRAP_S */, 0x2901 /* REPEAT */);
++        s.parameter(r.stoneTex[t], 0x2803 /* WRAP_T */, 0x2901);
++    }
++    return true;
++}
++
++// The material's own diffuse/specular/normal, as the submit bound them on units 0..2.
++static bool stoneSkinOriginals(uintptr_t material, GLuint* names) {
++    if (!readable(material, 0x108)) return false;
++    const uintptr_t set = *(uintptr_t*)(material + 0x100);
++    if (!readable(set, 0x28)) return false;
++    for (unsigned t = 0; t < 3; ++t) {
++        const uintptr_t texture = *(uintptr_t*)(set + 0x10 + t * 8);
++        if (!readable(texture, 0x5c) || *(GLenum*)(texture + 0x40) != 0x0DE1) return false;
++        names[t] = *(GLuint*)(texture + 0x58);
++        if (!names[t]) return false;
++    }
++    return true;
++}
++
++static bool stoneSkinEmit(const WearPlan& plan, bool bind, const unsigned char* stone, const GLuint* originals) { // SEH-only frame
++    if (!ownedNativeSwap(cueCurrentDC())) return false;
++    bool emitted = false;
++    AcquireSRWLockExclusive(&cueLock);
++    ++cueGlDepth;
++    __try {
++        if (cueDeletesInFlight || cueRetiring.load() || cueBindingFailed.load() ||
++            InterlockedCompareExchange(&stopping, 0, 0) || !ownedNativeSwap(cueCurrentDC())) return false;
++        StoneGl s{};
++        WearBindBuffer bindBuffer = nullptr;
++        if (!loadStoneGl(s) || (bind && !loadGl(bindBuffer, "glBindBuffer"))) return false;
++        auto* owner = prepareCue();
++        if (!owner || !stoneSkinTextures(owner->resources, s)) return false;
++        if (bind) {
++            wearBind(plan.material + 8);
++            bindBuffer(0x8893, plan.buffer);
++        }
++        bool swapped = false;
++        __try {
++            for (unsigned f = 0; f < plan.count;) {
++                unsigned end = f + 1;
++                while (end < plan.count && stone[end] == stone[f]) ++end;
++                if (bool(stone[f]) != swapped) {
++                    s.bind(0, 3, stone[f] ? owner->resources.stoneTex : originals);
++                    swapped = stone[f] != 0;
++                }
++                wearDrawRange(plan, f, end - f);
++                f = end;
++            }
++            emitted = true;
++        } __finally {
++            if (swapped) s.bind(0, 3, originals);
++        }
++    } __finally {
++        --cueGlDepth;
++        ReleaseSRWLockExclusive(&cueLock);
++    }
++    return emitted;
++}
++
++static bool stoneSkinDrawBody(uintptr_t node, uintptr_t material, bool bind) {
++    if (!stoneSkinSubmission(node)) return false;
++    GLuint originals[3]{};
++    if (!stoneSkinOriginals(material, originals)) return false;
++    const int lastFace = *(int*)(node + 0x268), lastVertex = *(int*)(node + 0x288);
++    if (lastFace < 0 || lastFace >= int(fp::wear::maxFaces) || lastVertex < 0 || lastVertex >= int(fp::wear::maxVertices)) return false;
++    WearPlan plan{};
++    if (!wearMeshFormat(node, material, lastFace, lastVertex, plan)) return false;
++    const uintptr_t tags = *(uintptr_t*)(node + 0x2f8);
++    if (!readable(tags, (size_t(plan.first) + plan.count) * 4)) return false;
++    static thread_local std::vector<unsigned char> stone;
++    stone.assign(plan.count, 0);
++    unsigned body = 0;
++    for (unsigned f = 0; f < plan.count; ++f) {
++        stone[f] = *(unsigned*)(tags + (size_t(plan.first) + f) * 4) == 0 ? 1 : 0; // tag 0: the body itself, not a worn piece
++        body += stone[f];
++    }
++    if (!body) return false;
++    return stoneSkinEmit(plan, bind, stone.data(), originals);
++}
++
++static bool stoneSkinDrawGuarded(uintptr_t node, uintptr_t material, bool bind) {
++    try { return stoneSkinDrawBody(node, material, bind); }
++    catch (const std::exception&) { stoneSkinFaults.fetch_add(1, std::memory_order_relaxed); return false; }
++}
++// true: the draw was made here (stone where the body shows, the rest native) and the native one is skipped.
++static bool stoneSkinDraw(uintptr_t node, uintptr_t material, bool bind) {
++    if (!stoneScope.count || !wearScope.colourPass) return false;
++    bool drawn = false;
++    __try {
++        drawn = stoneSkinDrawGuarded(node, material, bind);
++    } __except (EXCEPTION_EXECUTE_HANDLER) {
++        stoneSkinFaults.fetch_add(1, std::memory_order_relaxed);
++        drawn = false;
++    }
++    if (drawn) stoneSkinDraws.fetch_add(1, std::memory_order_relaxed);
++    else if (stoneSkinSubmission(node)) stoneSkinFallbacks.fetch_add(1, std::memory_order_relaxed);
++    return drawn;
++}
+diff --git src/stone_skin.h src/stone_skin.h
+new file mode 100644
+index 0000000..3a60b08
+--- /dev/null
++++ src/stone_skin.h
+@@ -0,0 +1,158 @@
++#pragma once
++// Stone skin maps: thick rounded rock plates split by dark crevices, made on the CPU once.
++// Periodic Voronoi cells (the texture tiles), a rounded slab bevel per plate, crevice
++// occlusion baked into the colour, and a normal map from the plate heights. The game's own
++// material program shades them with its own lights; nothing here is a shader.
++#include <cmath>
++#include <cstdint>
++#include <vector>
++namespace fp::stone {
++inline constexpr unsigned size = 512, cells = 7, levels = 10; // 512 .. 1
++
++struct Maps {
++    // RGBA8 mip chains, level 0 first: diffuse, specular, normal (xyz in rgb, x again in a,
++    // so a shader that reads its normal from rg, ag or rgb sees the same vector).
++    std::vector<uint8_t> diffuse, specular, normal;
++    size_t offset[levels]{};
++};
++
++inline uint32_t hash(uint32_t x, uint32_t y, uint32_t salt) {
++    uint32_t h = x * 0x8da6b343u ^ y * 0xd8163841u ^ salt * 0xcb1ab31fu;
++    h ^= h >> 13; h *= 0x5bd1e995u; h ^= h >> 15;
++    return h;
++}
++inline float unit(uint32_t h) { return float(h & 0xffffff) / float(0x1000000); }
++inline int wrap(int v, int n) { return ((v % n) + n) % n; }
++
++// Value noise with a period of `period` lattice steps across the texture, so it tiles.
++inline float noise(float x, float y, int period, uint32_t salt) {
++    const int ix = int(std::floor(x)), iy = int(std::floor(y));
++    const float fx = x - float(ix), fy = y - float(iy);
++    const float sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy);
++    auto at = [&](int a, int b) { return unit(hash(uint32_t(wrap(a, period)), uint32_t(wrap(b, period)), salt)); };
++    const float top = at(ix, iy) + (at(ix + 1, iy) - at(ix, iy)) * sx;
++    const float bottom = at(ix, iy + 1) + (at(ix + 1, iy + 1) - at(ix, iy + 1)) * sx;
++    return top + (bottom - top) * sy;
++}
++inline float grain(float u, float v, uint32_t salt) { // u, v in 0..1
++    float sum = 0, amp = .5f, norm = 0;
++    for (int period = 16; period <= 128; period *= 2, amp *= .55f) {
++        sum += amp * noise(u * float(period), v * float(period), period, salt + uint32_t(period));
++        norm += amp;
++    }
++    return sum / norm;
++}
++inline float smooth(float a, float b, float x) {
++    const float t = std::fmin(1.f, std::fmax(0.f, (x - a) / (b - a)));
++    return t * t * (3 - 2 * t);
++}
++
++struct Cell { float x, y; uint32_t id; };
++// The feature point of lattice cell (cx, cy), cx and cy taken modulo the period.
++inline Cell point(int cx, int cy) {
++    const uint32_t wx = uint32_t(wrap(cx, int(cells))), wy = uint32_t(wrap(cy, int(cells)));
++    const uint32_t h = hash(wx, wy, 0x51);
++    return {float(cx) + .08f + .84f * unit(h), float(cy) + .08f + .84f * unit(hash(wx, wy, 0x52)), wy * cells + wx};
++}
++
++struct Sample { float border, dx, dy; uint32_t id; }; // border: distance to the nearest cell edge, in cells
++inline Sample voronoi(float px, float py) {
++    const int cx = int(std::floor(px)), cy = int(std::floor(py));
++    Cell best{}; float bestD = 1e9f;
++    for (int j = -1; j <= 1; ++j) for (int i = -1; i <= 1; ++i) {
++        const Cell c = point(cx + i, cy + j);
++        const float d = (c.x - px) * (c.x - px) + (c.y - py) * (c.y - py);
++        if (d < bestD) { bestD = d; best = c; }
++    }
++    // A smooth minimum over the edges rounds the plate corners (no ridge lines into them).
++    float soft = 0, hard = 1e9f;
++    const float k = .045f;
++    const int bx = int(std::floor(best.x)), by = int(std::floor(best.y));
++    for (int j = -2; j <= 2; ++j) for (int i = -2; i <= 2; ++i) {
++        const Cell c = point(bx + i, by + j);
++        const float ex = c.x - best.x, ey = c.y - best.y, len = std::sqrt(ex * ex + ey * ey);
++        if (len < 1e-5f) continue;
++        const float mx = (c.x + best.x) * .5f - px, my = (c.y + best.y) * .5f - py;
++        const float d = (mx * ex + my * ey) / len;
++        hard = std::fmin(hard, d);
++        soft += std::exp(-d / k);
++    }
++    const float border = soft > 0 ? std::fmax(0.f, std::fmin(hard, -k * std::log(soft))) : hard;
++    return {border, px - best.x, py - best.y, best.id};
++}
++
++inline uint8_t byte(float v) { return uint8_t(std::lround(std::fmin(1.f, std::fmax(0.f, v)) * 255.f)); }
++
++inline void generate(Maps& out) {
++    const unsigned n = size;
++    std::vector<float> height(size_t(n) * n), occlusion(size_t(n) * n);
++    std::vector<float> colour(size_t(n) * n * 3), gloss(size_t(n) * n);
++    const float crack = .022f, bevel = .3f;
++    for (unsigned y = 0; y < n; ++y) for (unsigned x = 0; x < n; ++x) {
++        const float u = (float(x) + .5f) / float(n), v = (float(y) + .5f) / float(n);
++        const Sample s = voronoi(u * float(cells), v * float(cells));
++        const uint32_t h = hash(s.id, 7, 0x77);
++        // A rounded slab: flat crown, quarter-round bevel down into the crevice, each plate a little tilted.
++        const float t = std::fmin(1.f, std::fmax(0.f, (s.border - crack) / bevel));
++        const float bevelled = std::sqrt(1.f - (1.f - t) * (1.f - t));
++        const float tiltX = unit(h) - .5f, tiltY = unit(h >> 8) - .5f;
++        const float crown = .85f + .15f * unit(h >> 16) + .18f * (tiltX * s.dx + tiltY * s.dy) - .35f * (s.dx * s.dx + s.dy * s.dy);
++        const float rough = grain(u, v, 3) - .5f;
++        const size_t k = size_t(y) * n + x;
++        height[k] = s.border < crack ? -.15f * (1.f - s.border / crack) : bevelled * crown + .05f * rough;
++        occlusion[k] = .16f + .84f * smooth(0.f, crack + bevel * .7f, s.border);
++        // Orange-brown stone; each plate its own shade, darker toward its rim, a fine grain over all.
++        const float shade = .78f + .32f * unit(h >> 4), warm = .9f + .2f * unit(h >> 12);
++        const float rim = .82f + .18f * smooth(crack, crack + bevel, s.border);
++        const float g = .86f + .28f * grain(u, v, 21);
++        float r = .8f * shade * warm * rim * g, gr = .46f * shade * rim * g, b = .21f * shade * (2.f - warm) * rim * g;
++        if (s.border < crack) { r = .17f; gr = .09f; b = .05f; }
++        colour[k * 3] = r * occlusion[k];
++        colour[k * 3 + 1] = gr * occlusion[k];
++        colour[k * 3 + 2] = b * occlusion[k];
++        gloss[k] = s.border < crack ? 0.f : .06f + .08f * t * crown;
++    }
++    // Level 0, then box-filtered levels down to 1 x 1 (normals renormalised).
++    size_t total = 0;
++    for (unsigned l = 0, w = n; l < levels; ++l, w = w > 1 ? w / 2 : 1) { out.offset[l] = total; total += size_t(w) * w * 4; }
++    out.diffuse.assign(total, 0); out.specular.assign(total, 0); out.normal.assign(total, 0);
++    const float strength = 1.5f;
++    for (unsigned y = 0; y < n; ++y) for (unsigned x = 0; x < n; ++x) {
++        const size_t k = size_t(y) * n + x, o = k * 4;
++        auto at = [&](int a, int b) { return height[size_t(wrap(b, int(n))) * n + size_t(wrap(a, int(n)))]; };
++        const float dx = (at(int(x) + 1, int(y)) - at(int(x) - 1, int(y))) * .5f * float(n) / float(cells) * bevel;
++        const float dy = (at(int(x), int(y) + 1) - at(int(x), int(y) - 1)) * .5f * float(n) / float(cells) * bevel;
++        float nx = -dx * strength, ny = -dy * strength, nz = 1.f;
++        const float len = std::sqrt(nx * nx + ny * ny + nz * nz);
++        nx /= len; ny /= len; nz /= len;
++        out.diffuse[o] = byte(colour[k * 3]); out.diffuse[o + 1] = byte(colour[k * 3 + 1]);
++        out.diffuse[o + 2] = byte(colour[k * 3 + 2]); out.diffuse[o + 3] = 255;
++        out.specular[o] = out.specular[o + 1] = out.specular[o + 2] = byte(gloss[k] * occlusion[k]);
++        out.specular[o + 3] = byte(.18f * occlusion[k]);
++        out.normal[o] = byte(nx * .5f + .5f); out.normal[o + 1] = byte(ny * .5f + .5f);
++        out.normal[o + 2] = byte(nz * .5f + .5f); out.normal[o + 3] = out.normal[o];
++    }
++    for (unsigned l = 1, w = n / 2; l < levels; ++l, w = w > 1 ? w / 2 : 1) {
++        const unsigned p = w * 2;
++        for (std::vector<uint8_t>* map : {&out.diffuse, &out.specular, &out.normal}) {
++            uint8_t* dst = map->data() + out.offset[l];
++            const uint8_t* src = map->data() + out.offset[l - 1];
++            for (unsigned y = 0; y < w; ++y) for (unsigned x = 0; x < w; ++x) {
++                float sum[4]{};
++                for (unsigned j = 0; j < 2; ++j) for (unsigned i = 0; i < 2; ++i)
++                    for (unsigned c = 0; c < 4; ++c) sum[c] += src[(size_t(y * 2 + j) * p + x * 2 + i) * 4 + c];
++                uint8_t* d = dst + (size_t(y) * w + x) * 4;
++                if (map == &out.normal) {
++                    float v3[3];
++                    for (unsigned c = 0; c < 3; ++c) v3[c] = sum[c] / (4.f * 255.f) * 2.f - 1.f;
++                    const float len = std::sqrt(v3[0] * v3[0] + v3[1] * v3[1] + v3[2] * v3[2]);
++                    for (unsigned c = 0; c < 3; ++c) d[c] = byte((len > 1e-5f ? v3[c] / len : (c == 2 ? 1.f : 0.f)) * .5f + .5f);
++                    d[3] = d[0];
++                } else {
++                    for (unsigned c = 0; c < 4; ++c) d[c] = uint8_t(std::lround(sum[c] / 4.f));
++                }
++            }
++        }
++    }
++}
++} // namespace fp::stone
