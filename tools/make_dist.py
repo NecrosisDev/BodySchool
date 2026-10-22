@@ -115,9 +115,10 @@ def body_icons(rfi, like: bytes) -> bytes:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('--game', type=Path, default=Path(r'D:\SteamLibrary\steamapps\common\Exanima'))
-    parser.add_argument('--exanimate', type=Path, default=Path(os.environ.get(
-        'EXANIMATE_SERVICE', r'C:\Users\hunte\Documents\ChatGPT\Exanimate\work\r20-pose-studio-codex-20261020\service')))
+    parser.add_argument('--game', type=Path, default=os.environ.get('EXANIMA_DIR'), required=not os.environ.get('EXANIMA_DIR'),
+                        help='the Exanima folder (or set EXANIMA_DIR)')
+    parser.add_argument('--exanimate', type=Path, default=os.environ.get('EXANIMATE_SERVICE'),
+        required=not os.environ.get('EXANIMATE_SERVICE'), help='the ExaniMate service folder (or set EXANIMATE_SERVICE)')
     args = parser.parse_args()
     for needed in (args.exanimate / 'exanimate', args.game / 'Resource.rpk'):
         if not needed.exists():
