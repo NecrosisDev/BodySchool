@@ -41,6 +41,10 @@ local function sync()
     else
         warn_once("mark", "characters.marks is not granted: stone skin has no look")
     end
+    -- Blows on stone sound like the game's golems (material 6); nil gives the flesh sounds back.
+    if can("characters.hit_sound", characters.set_hit_sound) then
+        ok = characters.set_hit_sound("player", state.on and cfg.hit_material or nil) and ok
+    end
     if ok then state.applied = want end
 end
 
