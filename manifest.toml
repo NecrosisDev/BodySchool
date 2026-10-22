@@ -1,17 +1,27 @@
 [plugin]
-name = "Stone Skin"
-version = "0.3.0"
+name = "Body School"
+version = "0.9.3"
 category = "Gameplay"
 
 [script]
 runtime = "com.necrosis.script-runtime"
 entry = "scripts/main.lua"
 requires = ["events.lifecycle", "timers"]
-# powers.cast must reach the Body school, and characters.damage_scale / characters.marks
-# must exist (RUNTIME-REQUESTS.md); until then the addon loads and only logs.
-optional = ["powers.cast", "powers.focus", "ui.settings", "ui.notify", "world.read", "events.script",
-            "characters.damage_scale", "characters.marks"]
+# powers.cast must reach the Body school (runtime r33); characters.damage_scale and
+# characters.marks carry Stone Skin, Petrify and the stone look; characters.hit_sound the player's
+# stone hit sounds; characters.awareness finds the foes Petrify, Weaken and Slow catch and
+# characters.read gives each its own handle; characters.ai.write takes a petrified foe's skill;
+# characters.body carries Might, Quicken, Weaken, Slow and Petrify's stillness; effects.arc the cast
+# arcs; events.combat and ui.sound the hit sounds of NPCs turned to stone. Each part only logs or
+# does nothing without its own.
+optional = ["powers.cast", "powers.focus", "ui.settings", "ui.notify", "ui.sound", "world.read", "events.script",
+            "events.combat", "characters.damage_scale", "characters.marks", "characters.awareness",
+            "characters.ai.write", "characters.read", "characters.body", "characters.hit_sound", "effects.arc"]
 
 [script.modules]
 config = "scripts/config.lua"
 effect = "scripts/effect.lua"
+body = "scripts/body.lua"
+petrify = "scripts/petrify.lua"
+companions = "scripts/companions.lua"
+regenerate = "scripts/regenerate.lua"
