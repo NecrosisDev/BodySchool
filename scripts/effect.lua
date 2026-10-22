@@ -9,6 +9,7 @@ local state = {on = false, held = false, ends = 0, applied = nil, level = nil}
 
 function effect.init(config) cfg = config end
 function effect.active() return state.on end
+function effect.held() return state.on and state.held end
 function effect.remaining()
     if not state.on then return 0 end
     if state.held then return math.huge end

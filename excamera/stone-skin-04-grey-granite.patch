@@ -1,0 +1,32 @@
+diff --git src/stone_skin.h src/stone_skin.h
+index a3c15b2..61f5303 100644
+--- src/stone_skin.h
++++ src/stone_skin.h
+@@ -121,18 +121,18 @@ inline void generate(Maps& out) {
+         height[k] = s.border < crack ? -.15f * (1.f - s.border / crack)
+                   : bevelled * crown + .16f * lumps * t + .07f * grit - .14f * fracture - .06f * pits;
+         occlusion[k] = (.16f + .84f * smooth(0.f, crack + bevel * .7f, s.border)) * (1.f - .45f * fracture) * (1.f - .25f * pits);
+-        // Weathered orange-brown stone: each plate its own shade, mottled, flecked, greyer where worn.
+-        const float shade = .74f + .32f * unit(h >> 4), warm = .88f + .22f * unit(h >> 12);
++        // Weathered grey granite: each plate its own shade, some a touch warmer or cooler, mottled,
++        // flecked light and dark, with faint earthy staining.
++        const float shade = .78f + .3f * unit(h >> 4), warm = unit(h >> 12) - .5f; // warm: -0.5 cool .. +0.5 warm
+         const float rim = .8f + .2f * smooth(crack, crack + bevel, s.border);
+-        const float mottle = .78f + .44f * fbm(u, v, 8, 64, 21), fleck = fbm(u, v, 128, 256, 23, .8f);
+-        const float speck = fleck > .68f ? 1.18f : fleck < .3f ? .8f : 1.f;
+-        const float grey = .1f + .18f * fbm(u, v, 6, 24, 25); // share of grey dust over the orange
+-        float r = .86f * shade * warm, gr = .49f * shade, b = .22f * shade * (2.f - warm);
+-        const float lum = .3f * r + .59f * gr + .11f * b;
+-        r += (lum - r) * grey; gr += (lum - gr) * grey; b += (lum - b) * grey;
++        const float mottle = .8f + .4f * fbm(u, v, 8, 64, 21), fleck = fbm(u, v, 128, 256, 23, .8f);
++        const float speck = fleck > .68f ? 1.25f : fleck < .3f ? .72f : 1.f;
++        const float stain = smooth(.55f, .8f, fbm(u, v, 6, 24, 25)) * .5f; // rusty-brown patches
++        float r = .5f * shade * (1.f + .06f * warm), gr = .49f * shade, b = .46f * shade * (1.f - .07f * warm);
++        r *= 1.f + .14f * stain; gr *= 1.f + .02f * stain; b *= 1.f - .12f * stain;
+         const float m = rim * mottle * speck * (1.f + .5f * grit);
+         r *= m; gr *= m; b *= m;
+-        if (s.border < crack) { r = .13f; gr = .075f; b = .045f; }
++        if (s.border < crack) { r = .09f; gr = .085f; b = .08f; }
+         colour[k * 3] = r * occlusion[k];
+         colour[k * 3 + 1] = gr * occlusion[k];
+         colour[k * 3 + 2] = b * occlusion[k];

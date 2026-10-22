@@ -1,18 +1,17 @@
 [plugin]
 name = "Stone Skin"
-version = "0.2.0"
+version = "0.3.0"
+category = "Gameplay"
 
 [script]
 runtime = "com.necrosis.script-runtime"
 entry = "scripts/main.lua"
 requires = ["events.lifecycle", "timers"]
-# characters.damage_scale and characters.marks are requested from the runtime
-# (RUNTIME-REQUESTS.md); until it grants them the effect only notifies and logs.
-optional = ["ui.settings", "ui.notify", "world.read", "events.script", "events.item_use", "items.read",
-            "inventory.read", "inventory.transfer", "world.spawn", "storage.save",
+# powers.cast must reach the Body school, and characters.damage_scale / characters.marks
+# must exist (RUNTIME-REQUESTS.md); until then the addon loads and only logs.
+optional = ["powers.cast", "powers.focus", "ui.settings", "ui.notify", "world.read", "events.script",
             "characters.damage_scale", "characters.marks"]
 
 [script.modules]
 config = "scripts/config.lua"
 effect = "scripts/effect.lua"
-elixir = "scripts/elixir.lua"
